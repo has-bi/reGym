@@ -1,0 +1,94 @@
+# reGym: builds the Android APK of this fork and publishes it as a GitHub release, so the phone
+# can install it from github.com/has-bi/reGym/releases/latest.
+#
+# Phone-only build of the sideload flavor: its own package (ch.duartesantos.opengym.regym), signed
+# with reGym's own key, updater pointed at this repository. The exercise animations are the
+# repository's unmodified 180 px set, which a non-commercial fork may keep (NOTICE.md).
+#
+# Secrets (Settings → Secrets and variables → Actions):
+#   REGYM_KEYSTORE_B64       the keystore, base64. KEEP THE ORIGINAL: every update must be signed
+#                            with it, or Android refuses to install over the existing app.
+#   REGYM_KEYSTORE_PASSWORD  keystore (and key) password
+#   REGYM_KEY_ALIAS          key alias
+name: reGym APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: regym-apk
+  cancel-in-progress: true
+
+jobs:
+  apk:
+    if: github.repository == 'has-bi/reGym'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      VITE_UPDATE_REPO: has-bi/reGym
+      # Above upstream's versionCode, rising with every run, so each APK installs as an update.
+      VERSION_CODE: ${{ 100000 + github.run_number }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install
+        run: |
+          npm ci
+          cd frontend && npm ci
+
+      - name: Phone build (web assets + Capacitor sync)
+        working-directory: frontend
+        run: npm run build:mobile
+
+      - name: Gradle release build
+        working-directory: frontend/android
+        run: ./gradlew --no-daemon assembleSideloadRelease -PregymVersionCode=$VERSION_CODE
+
+      - name: Sign
+        env:
+          KS_B64: ${{ secrets.REGYM_KEYSTORE_B64 }}
+          KS_PASS: ${{ secrets.REGYM_KEYSTORE_PASSWORD }}
+          KS_ALIAS: ${{ secrets.REGYM_KEY_ALIAS }}
+        run: |
+          test -n "$KS_B64" || { echo "::error::REGYM_KEYSTORE_B64 secret is missing"; exit 1; }
+          echo "$KS_B64" | base64 -d > "$RUNNER_TEMP/regym.keystore"
+          BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          VER=$(node -p "require('./frontend/package.json').version")
+          OUT="reGym-$VER-$VERSION_CODE.apk"
+          "$BT/zipalign" -p -f 4 frontend/android/app/build/outputs/apk/sideload/release/app-sideload-release-unsigned.apk aligned.apk
+          "$BT/apksigner" sign --ks "$RUNNER_TEMP/regym.keystore" --ks-pass env:KS_PASS \
+            --ks-key-alias "$KS_ALIAS" --key-pass env:KS_PASS --out "$OUT" aligned.apk
+          "$BT/apksigner" verify --print-certs "$OUT" | head -3
+          sha256sum "$OUT" | cut -d' ' -f1 > "$OUT.sha256"
+          rm -f "$RUNNER_TEMP/regym.keystore"
+          echo "APK=$OUT" >> "$GITHUB_ENV"
+          echo "VER=$VER" >> "$GITHUB_ENV"
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: regym-${{ env.VERSION_CODE }}
+          name: reGym ${{ env.VER }} (build ${{ env.VERSION_CODE }})
+          body: |
+            Built from ${{ github.sha }}. Install the APK on the phone; it updates the existing reGym and keeps its data.
+          files: |
+            ${{ env.APK }}
+            ${{ env.APK }}.sha256

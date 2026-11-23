@@ -10,7 +10,9 @@ android {
         applicationId "ch.duartesantos.opengym"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 46
+        // reGym: CI passes -PregymVersionCode (run number based) so every build installs as an
+        // update over the last one; local builds keep upstream's number.
+        versionCode project.hasProperty('regymVersionCode') ? project.regymVersionCode.toInteger() : 46
         versionName "1.4.5"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
@@ -58,6 +60,9 @@ android {
         sideload {
             dimension = "channel"
             isDefault = true
+            // reGym: its own package, signed with its own key, so it never collides with the
+            // official openGym app and can sit next to it (same approach as the offline flavor).
+            applicationIdSuffix ".regym"
             buildConfigField "String", "CHANNEL", '"sideload"'
             buildConfigField "boolean", "BACKGROUND_LOCATION", "true"
         }
