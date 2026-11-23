@@ -87,20 +87,34 @@ jobs:
       - name: Sign
         env:
           KS_B64: ${{ secrets.REGYM_KEYSTORE_B64 }}
-          KS_PASS: ${{ secrets.REGYM_KEYSTORE_PASSWORD }}
-          KS_ALIAS: ${{ secrets.REGYM_KEY_ALIAS }}
+          KS_PASS_RAW: ${{ secrets.REGYM_KEYSTORE_PASSWORD }}
+          KS_ALIAS_RAW: ${{ secrets.REGYM_KEY_ALIAS }}
         run: |
-          test -n "$KS_B64" || { echo "::error::REGYM_KEYSTORE_B64 secret is missing"; exit 1; }
-          echo "$KS_B64" | base64 -d > "$RUNNER_TEMP/regym.keystore"
+          fail() { echo "::error title=Sign failed::$1"; exit 1; }
+          test -n "$KS_B64" || fail "REGYM_KEYSTORE_B64 secret is missing"
+          test -n "$KS_PASS_RAW" || fail "REGYM_KEYSTORE_PASSWORD secret is missing"
+          # Pasted secrets often pick up spaces or line breaks; none of these values contain any.
+          export KS_PASS=$(printf '%s' "$KS_PASS_RAW" | tr -d '[:space:]')
+          KS_ALIAS=$(printf '%s' "${KS_ALIAS_RAW:-regym}" | tr -d '[:space:]')
+          KS="$RUNNER_TEMP/regym.keystore"
+          printf '%s' "$KS_B64" | tr -d '[:space:]' | base64 -d > "$KS" 2>/dev/null \
+            || fail "REGYM_KEYSTORE_B64 is not valid base64 (paste the whole keystore.b64, one line)"
+          keytool -list -keystore "$KS" -storepass "$KS_PASS" > keytool.out 2>&1 \
+            || fail "Keystore rejected: $(tail -1 keytool.out) (check REGYM_KEYSTORE_PASSWORD)"
+          grep -qi "^$KS_ALIAS," keytool.out \
+            || fail "Alias '$KS_ALIAS' not in the keystore (aliases: $(grep -i privatekeyentry keytool.out | cut -d, -f1 | tr '\n' ' '))"
+
           BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
           VER=$(node -p "require('./frontend/package.json').version")
           OUT="reGym-$VER-$VERSION_CODE.apk"
-          "$BT/zipalign" -p -f 4 frontend/android/app/build/outputs/apk/sideload/release/app-sideload-release-unsigned.apk aligned.apk
-          "$BT/apksigner" sign --ks "$RUNNER_TEMP/regym.keystore" --ks-pass env:KS_PASS \
-            --ks-key-alias "$KS_ALIAS" --key-pass env:KS_PASS --out "$OUT" aligned.apk
+          "$BT/zipalign" -p -f 4 frontend/android/app/build/outputs/apk/sideload/release/app-sideload-release-unsigned.apk aligned.apk \
+            || fail "zipalign failed"
+          "$BT/apksigner" sign --ks "$KS" --ks-pass env:KS_PASS \
+            --ks-key-alias "$KS_ALIAS" --key-pass env:KS_PASS --out "$OUT" aligned.apk 2> sign.err \
+            || fail "apksigner: $(tail -3 sign.err | tr '\n' ' ')"
           "$BT/apksigner" verify --print-certs "$OUT" | head -3
           sha256sum "$OUT" | cut -d' ' -f1 > "$OUT.sha256"
-          rm -f "$RUNNER_TEMP/regym.keystore"
+          rm -f "$KS"
           echo "APK=$OUT" >> "$GITHUB_ENV"
           echo "VER=$VER" >> "$GITHUB_ENV"
 
