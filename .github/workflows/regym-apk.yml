@@ -31,10 +31,13 @@ jobs:
     timeout-minutes: 60
     env:
       VITE_UPDATE_REPO: has-bi/reGym
-      # Above upstream's versionCode, rising with every run, so each APK installs as an update.
-      VERSION_CODE: ${{ 100000 + github.run_number }}
     steps:
       - uses: actions/checkout@v4
+
+      # Above upstream's versionCode and rising with every run, so each APK installs as an
+      # update. Computed in shell: workflow expressions have no arithmetic.
+      - name: Version code
+        run: echo "VERSION_CODE=$((100000 + GITHUB_RUN_NUMBER))" >> "$GITHUB_ENV"
 
       - uses: actions/setup-node@v4
         with:
